@@ -231,8 +231,8 @@ jobs:
             Komikku-armeabi-v7a-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
             Komikku-x86-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
             Komikku-x86_64-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
-          draft: ${{ github.event.inputs.dry-run != '' || github.event.inputs.git-ref == 'master'}}
-          prerelease: ${{ github.event.inputs.git-ref != 'master'}}
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
