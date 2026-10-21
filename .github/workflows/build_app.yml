@@ -46,50 +46,44 @@ jobs:
           exclude_types: "draft"
           view_top: 1
 
-      - name: Curren commit
+      - name: Current commit
         id: current_commit
         run: |
           commit_count=$(git rev-list --count HEAD)
           current_sha=$(git rev-parse --short HEAD)
-          echo "COMMIT_COUNT=$commit_count"
-          echo "COMMIT_COUNT=$commit_count" >> $GITHUB_OUTPUT
-          echo "CURRENT_SHA=$current_sha"
-          echo "CURRENT_SHA=$current_sha" >> $GITHUB_OUTPUT
+
+          echo "COMMIT_COUNT=$commit_count" >> "$GITHUB_OUTPUT"
+          echo "CURRENT_SHA=$current_sha" >> "$GITHUB_OUTPUT"
 
       - name: Previous commit
         id: previous_commit
         run: |
-          commit_count_diff=$(git rev-list --count "${{ steps.last_release.outputs.tag_name }}"..HEAD)
+          previous_tag="${{ steps.last_release.outputs.tag_name }}"
 
-          # Fake at least 1 commits (to avoid no changes)
-          if [ "${commit_count_diff}" -eq 0 ]; then
-            commit_count_diff=1
+          if [ -n "$previous_tag" ] && git rev-parse "$previous_tag^{commit}" >/dev/null 2>&1; then
+            prev_release_sha=$(git rev-parse --short "$previous_tag")
+          else
+            prev_release_sha=$(git rev-parse --short HEAD~1)
           fi
 
-          echo "commit_count_diff=$commit_count_diff"
-          prev_release_sha=$(git rev-parse --short HEAD~$commit_count_diff)
-          echo "PREV_RELEASE_SHA=$prev_release_sha"
-          echo "PREV_RELEASE_SHA=$prev_release_sha" >> $GITHUB_OUTPUT
-          echo "PREV_TAG_NAME=${{ steps.last_release.outputs.tag_name }}"
-          echo "PREV_TAG_NAME=${{ steps.last_release.outputs.tag_name }}" >> $GITHUB_OUTPUT
+          echo "PREV_RELEASE_SHA=$prev_release_sha" >> "$GITHUB_OUTPUT"
+          echo "PREV_TAG_NAME=$previous_tag" >> "$GITHUB_OUTPUT"
 
       - name: Prepare env
         id: prepare_env
         run: |
           tag_prefix=r
-          artifacts_prefix=preview/app
+          artifacts_prefix=nightly/app
           build_type_name=Preview
 
-          echo "TAG_NAME=${tag_prefix}${{ steps.current_commit.outputs.COMMIT_COUNT }}"
-          echo "TAG_NAME=${tag_prefix}${{ steps.current_commit.outputs.COMMIT_COUNT }}" >> $GITHUB_OUTPUT
-          echo "ARTIFACTS_PREFIX=$artifacts_prefix"
-          echo "ARTIFACTS_PREFIX=$artifacts_prefix" >> $GITHUB_OUTPUT
-          echo "BUILD_TYPE_NAME=$build_type_name"
-          echo "BUILD_TYPE_NAME=$build_type_name" >> $GITHUB_OUTPUT
+          echo "TAG_NAME=${tag_prefix}${{ steps.current_commit.outputs.COMMIT_COUNT }}" >> "$GITHUB_OUTPUT"
+          echo "ARTIFACTS_PREFIX=$artifacts_prefix" >> "$GITHUB_OUTPUT"
+          echo "BUILD_TYPE_NAME=$build_type_name" >> "$GITHUB_OUTPUT"
 
   build-app:
     runs-on: 'ubuntu-24.04'
     needs: prepare-build
+
     steps:
       - name: Clone Repository (${{ github.event.inputs.git-ref }} - ${{ needs.prepare-build.outputs.TAG_NAME }})
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,10 +95,16 @@ jobs:
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
-          java-version: 17
+          java-version-file: .github/.java-version
           distribution: temurin
 
+      - name: Check optional secrets
+        id: opt_secrets
+        run: |
+          echo "client_secrets=${{ secrets.GOOGLE_CLIENT_SECRETS_JSON != '' }}" >> "$GITHUB_OUTPUT"
+
       - name: Write client_secrets.json
+        if: steps.opt_secrets.outputs.client_secrets == 'true'
         uses: DamianReeves/write-file-action@6929a9a6d1807689191dcc8bbe62b54d70a32b42 # v1.3
         with:
           path: app/src/main/assets/client_secrets.json
@@ -118,10 +118,15 @@ jobs:
         run: ./gradlew spotlessCheck
 
       - name: Build app
-        run: ./gradlew assemblePreview -Penable-updater -PdevSecret="${{ secrets.DEV_SECRETS }}"
+        run: |
+          ./gradlew assembleNightly \
+            -Pdist=ci \
+            -Pinclude-telemetry=false \
+            -Penable-updater \
+            -PdevSecret="${{ secrets.DEV_SECRETS }}"
 
       - name: Run unit tests
-        run: ./gradlew testReleaseUnitTest
+        run: ./gradlew testDebugUnitTest
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -134,6 +139,7 @@ jobs:
     needs:
       - prepare-build
       - build-app
+
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -143,7 +149,7 @@ jobs:
       - name: Sign APK
         uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
         with:
-          releaseDirectory: app/build/outputs/apk/preview
+          releaseDirectory: app/build/outputs/apk/nightly
           signingKeyBase64: ${{ secrets.SIGNING_KEY }}
           alias: ${{ secrets.ALIAS }}
           keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
@@ -156,11 +162,23 @@ jobs:
         run: |
           set -e
 
-          mv app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}-universal-preview-signed.apk Komikku-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
-          mv app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}-arm64-v8a-preview-signed.apk Komikku-arm64-v8a-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
-          mv app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}-armeabi-v7a-preview-signed.apk Komikku-armeabi-v7a-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
-          mv app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}-x86-preview-signed.apk Komikku-x86-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
-          mv app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}-x86_64-preview-signed.apk Komikku-x86_64-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
+          prefix="app/build/outputs/apk/${{ needs.prepare-build.outputs.ARTIFACTS_PREFIX }}"
+          tag="${{ needs.prepare-build.outputs.TAG_NAME }}"
+
+          mv "${prefix}-universal-nightly-signed.apk" \
+            "Komikku-${tag}.apk"
+
+          mv "${prefix}-arm64-v8a-nightly-signed.apk" \
+            "Komikku-arm64-v8a-${tag}.apk"
+
+          mv "${prefix}-armeabi-v7a-nightly-signed.apk" \
+            "Komikku-armeabi-v7a-${tag}.apk"
+
+          mv "${prefix}-x86-nightly-signed.apk" \
+            "Komikku-x86-${tag}.apk"
+
+          mv "${prefix}-x86_64-nightly-signed.apk" \
+            "Komikku-x86_64-${tag}.apk"
 
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -179,12 +197,11 @@ jobs:
 
             ${{ needs.prepare-build.outputs.COMMIT_LOGS }}
 
-            **Full Changelog**: [xkana-shii/komikku@${{ needs.prepare-build.outputs.PREV_TAG_NAME }}...${{ needs.prepare-build.outputs.TAG_NAME }}](https://github.com/xkana-shii/komikku/compare/${{ needs.prepare-build.outputs.PREV_TAG_NAME }}...${{ needs.prepare-build.outputs.TAG_NAME }})
+            **Full Changelog**: [xkana-shii/komikku@${{ needs.prepare-build.outputs.PREV_TAG_NAME }}...${{ needs.prepare-build.outputs.CURRENT_SHA }}](https://github.com/xkana-shii/komikku/compare/${{ needs.prepare-build.outputs.PREV_RELEASE_SHA }}...${{ needs.prepare-build.outputs.CURRENT_SHA }})
 
-            <!-->
             > [!TIP]
-            >
-            > ### If you are unsure which version to download then go with `Komikku-${{ needs.prepare-build.outputs.TAG_NAME }}.apk`
+            > If you are unsure which version to download, use `Komikku-${{ needs.prepare-build.outputs.TAG_NAME }}.apk`.
+
           files: |
             Komikku-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
             Komikku-arm64-v8a-${{ needs.prepare-build.outputs.TAG_NAME }}.apk
@@ -195,14 +212,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # cleaning-repo:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Prune old releases
-  #       uses: dev-drprasad/delete-older-releases@dfbe6be2a006e9475dfcbe5b8d201f1824c2a9fe # v0.3.4
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       with:
-  #         keep_latest: 28
-  #         delete_tags: true
